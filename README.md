@@ -7,6 +7,8 @@ Please see the below list of files contained within this repository, and their r
 - MomentModelCalibration.Rmd: Uses MomentModelBuilding.R functions to calibrate the TTM-HAR-RM and TTM-HAR-eps functions by finding the K that minimises AIC (also examining SIC and Adjusted R Squared).
 - MomentModelAnalysis.Rmd: Uses calibrated models to analyse trends and perform the realised moments forecasting exercise.
 
+Please see below for a description of data files referenced throughout the code.
+
 Data in 'Data/Raw/' contains raw .csv files after extraction from Refinitiv Datascope. The files are listed below:
 
 - AllContracts.csv: A raw table containing a series of prices at 5-minute intervals for all traded EUA futures contracts.
