@@ -4,7 +4,7 @@ Please see the below list of files contained within this repository, and their r
 - DataProcessing.R: Processes raw data in 'Data/Raw/' and outputs processed data in 'Data/Processed/'. This includes calculating time until contract maturity, futures rolling, calculating log-returns and realised moments.
 - MomentModelBuilding.R: Contains code creating functions for all aspects of analysis. This includes some common data transformations, model fitting, log-likelihood functions and model forecasting.
 - EDA.Rmd: A high level analysis of processed data, particularly focused on descriptive statistics and trading volumes of futures contracts. Consists of mostly summary statistics and many high level plots.
-- MomentModelCalibration.Rmd: Uses MomentModelBuilding.R functions to calibrate the TTM-HAR-RM and TTM-HAR-eps functions by finding the K that minimises AIC (also examining SIC and Adjusted R Squared).
+- MomentModelCalibration.Rmd: Uses MomentModelBuilding.R functions to calibrate the TTM-HAR-RM and TTM-HAR-e functions by finding the K that minimises AIC (also examining SIC and Adjusted R Squared).
 - MomentModelAnalysis.Rmd: Uses calibrated models to analyse trends and perform the realised moments forecasting exercise.
 
 Please see below for a description of data files referenced throughout the code (these are not uploaded nor available in this repository).
