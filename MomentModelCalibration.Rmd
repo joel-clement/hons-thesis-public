@@ -1,0 +1,171 @@
+---
+title: "MomentModelCalibration"
+author: "Joel Clement"
+date: "2023-08-14"
+output: pdf_document
+---
+
+```{r label = 'Library Invokation'}
+start = Sys.time()
+library(Hmisc) # accessing describe()
+library(tidyverse) # ggplot, dplyr, and other functionality
+library(scales) # aesthetic scaling for ggplots
+library(lubridate) # date/timestamp data handling
+library(forecast) # forecasting tools
+library(qlcal) # trading calendar tools
+library(stats) # stats/modelling tools e.g. AIC/BIC
+library(highfrequency) # estimating HAR model
+library(zoo) # rollmean()
+library(xts) # used for highfrequency package's HAR model estimation
+library(tseries) # jarque-bera test
+library(leaps) #subset selection
+library(dgof) #K-S test
+library(quarks) # VaR and ES backtesting tools
+print(Sys.time() - start)
+```
+
+```{r label = 'Setting Parameters'}
+maxTTM <- 252
+#Creating ICE London Business Calendar
+setCalendar("UnitedKingdom")
+```
+
+```{r label = 'Reading Processed Data'}
+AllRV <- read_csv('../Data/Processed/AllRV.csv', col_types = c('D', 'f', rep('n', 8))) #run code to write processed 'AllRV.csv' before
+DecRV <- read_csv('../Data/Processed/DecRV.csv', col_types = c('D', 'f', rep('n', 12)))
+DecReturns <- read_csv('../Data/Processed/DecReturns.csv', col_types = c('f', 't', rep('n', 6)))
+ExpiryMapping <- read_csv('../Data/Processed/ExpiryMapping.csv', col_types = c('c', 'D', 'D'))
+FirstDecNearby <- read_csv('../Data/Processed/FirstDecNearby.csv', col_types = c('D', 'c', rep('n', 12), rep('D', 6)))
+SecondDecNearby <- read_csv('../Data/Processed/SecondDecNearby.csv', col_types = c('D', 'c', rep('n', 12), rep('D', 6)))
+```
+
+```{r label = 'Importing Custom Functions'}
+source("MomentModelBuilding.R")
+```
+
+```{r label = 'TTM + HAR-RV Calibration'}
+start = Sys.time()
+fitmat <- optHarmonics(data = FirstDecNearby, onestep = TRUE) # SIC minimised at K = 0, AIC minimised at K = 6
+model <- TTM.HAR_RM.fit(data = FirstDecNearby, RM = 'RV', K = 6, onestep = TRUE)
+fitmat
+summary(model)
+logLik(model)
+print(Sys.time() - start)
+```
+
+```{r label = 'TTM + HAR-Epsilon (RV) Calibration'}
+start = Sys.time()
+fitmat <- optHarmonics.eps(data = FirstDecNearby, RM = 'RV') # SIC minimised at K = 0, AIC minimised at K = 6
+model <- TTM.HAR_eps.fit(data = FirstDecNearby, RM = 'RV', K = 6)
+summary(model)
+print(Sys.time() - start)
+```
+
+```{r label = 'TTM + HAR-Epsilon (RV) 2-step Calibration'}
+fitmat <- optHarmonics(data = FirstDecNearby, RM = 'RV', onestep = FALSE, log.model = TRUE) # SIC minimised at K = 5, AIC is mostly decreasing
+model <- TTM.HAR_RM.fit(data = FirstDecNearby, RM = 'RV', K = 5, onestep = FALSE, log.model = TRUE)
+summary(model$trigmodel)
+summary(model$harmodel)
+```
+
+```{r label = 'TTM + HAR-m3 Calibration'}
+start = Sys.time()
+fitmat <- optHarmonics(data = FirstDecNearby, RM = 'm3', onestep = TRUE, log.model = FALSE) # AIC/SIC strictly increases
+model <- TTM.HAR_RM.fit(data = FirstDecNearby, RM = 'm3', K = 0, onestep = TRUE, log.model = FALSE)
+summary(model)
+logLik(model)
+print(Sys.time() - start)
+```
+
+```{r label = 'TTM + HAR-Epsilon (m3) Calibration'}
+start = Sys.time()
+fitmat <- optHarmonics.eps(data = FirstDecNearby, RM = 'm3', log.model = FALSE) # SIC minimised at K = 0, AIC minimised at K = 0
+model <- TTM.HAR_eps.fit(data = FirstDecNearby, RM = 'm3', K = 0, log.model = FALSE)
+summary(model)
+logLik(model)
+print(Sys.time() - start)
+```
+
+```{r label = 'TTM + HAR-Epsilon (m3) 2-step Calibration'}
+fitmat <- optHarmonics(data = FirstDecNearby, RM = 'm3', onestep = FALSE, log.model = FALSE) # SIC mono. inc., AIC minimised at K=1.
+model <- TTM.HAR_RM.fit(data = FirstDecNearby, RM = 'm3', K = 1, onestep = FALSE, log.model = FALSE)
+summary(model$trigmodel)
+summary(model$harmodel)
+```
+
+```{r label = 'TTM + HAR-RS Calibration'}
+start = Sys.time()
+fitmat <- optHarmonics(data = FirstDecNearby, RM = 'RS', onestep = TRUE, log.model = FALSE) # SIC minimised at K = 0, AIC minimised at K = 0
+model <- TTM.HAR_RM.fit(data = FirstDecNearby, RM = 'RS', K = 0, onestep = TRUE, log.model = FALSE)
+summary(model)
+print(Sys.time() - start)
+```
+
+```{r label = 'TTM + HAR-Epsilon (RS) Calibration'}
+start = Sys.time()
+fitmat <- optHarmonics.eps(data = FirstDecNearby, RM = 'RS', log.model = FALSE) # SIC minimised at K = 0, AIC minimised at K = 0
+model <- TTM.HAR_eps.fit(data = FirstDecNearby, RM = 'RS', K = 0, log.model = FALSE)
+summary(model)
+
+print(Sys.time() - start)
+```
+
+```{r label = 'TTM + HAR-Epsilon (RS) 2-step Calibration'}
+start = Sys.time()
+fitmat <- optHarmonics(data = FirstDecNearby, RM = 'RS', onestep = FALSE, log.model = FALSE) # SIC minimised at K = 0, AIC minimised at K = 28?
+
+print(Sys.time() - start)
+```
+
+```{r label = 'TTM + HAR-m4 Calibration'}
+start = Sys.time()
+fitmat <- optHarmonics(data = FirstDecNearby, RM = 'm4', onestep = TRUE, log.model = TRUE) # SIC minimised at K = 0, AIC minimised at K = 7
+model <- TTM.HAR_RM.fit(data = FirstDecNearby, RM = 'm4', K = 7, onestep = TRUE, log.model = TRUE)
+summary(model)
+logLik(model)
+print(Sys.time() - start)
+```
+
+```{r label = 'TTM + HAR-Epsilon (m4) Calibration'}
+start = Sys.time()
+fitmat <- optHarmonics.eps(data = FirstDecNearby, RM = 'm4', log.model = TRUE) # SIC minimised at K = 0, AIC minimised at K = 7
+model <- TTM.HAR_eps.fit(data = FirstDecNearby, RM = 'm4', K = 7, log.model = TRUE)
+summary(model)
+print(Sys.time() - start)
+```
+
+```{r label = 'TTM + HAR-RK Calibration'}
+start = Sys.time()
+fitmat <- optHarmonics(data = FirstDecNearby, RM = 'RK', onestep = TRUE, log.model = TRUE) # SIC minimised at K = 0, AIC minimised at K = 1
+model <- TTM.HAR_RM.fit(data = FirstDecNearby, RM = 'RK', K = 5, onestep = TRUE, log.model = TRUE)
+summary(model)
+logLik(model)
+print(Sys.time() - start)
+```
+
+```{r label = 'TTM + HAR-Epsilon (RK) Calibration'}
+start = Sys.time()
+fitmat <- optHarmonics.eps(data = FirstDecNearby, RM = 'RK') # SIC minimised at K = 0, AIC minimised at K = 1
+print(Sys.time() - start)
+```
+
+```{r label = 'Key plots to save'}
+fitmat <- optHarmonics(data = FirstDecNearby, RM = 'RV')
+data.frame(fitmat[,c(1,9)]) %>% ggplot() + geom_point(aes(x = K, y = AIC)) + geom_line(aes(x = K, y = AIC)) + scale_x_continuous(breaks = seq(from=0, to=10,by=2)) + ggtitle('AIC vs. K for TTM-HAR-RV Model')
+
+fitmat <- optHarmonics.eps(data = FirstDecNearby, RM = 'RV')
+data.frame(fitmat[,c(1,6)]) %>% ggplot() + geom_point(aes(x = K, y = AIC)) + geom_line(aes(x = K, y = AIC)) + scale_x_continuous(breaks = seq(from=0, to=10,by=2)) + ggtitle('AIC vs. K for TTM-HAR-e RV Model')
+
+fitmat <- optHarmonics(data = FirstDecNearby, RM = 'RS')
+data.frame(fitmat[,c(1,9)]) %>% ggplot() + geom_point(aes(x = K, y = AIC)) + geom_line(aes(x = K, y = AIC)) + scale_x_continuous(breaks = seq(from=0, to=10,by=2)) + ggtitle('AIC vs. K for TTM-HAR-RS Model')
+
+fitmat <- optHarmonics.eps(data = FirstDecNearby, RM = 'RS')
+data.frame(fitmat[,c(1,6)]) %>% ggplot() + geom_point(aes(x = K, y = AIC)) + geom_line(aes(x = K, y = AIC)) + scale_x_continuous(breaks = seq(from=0, to=10,by=2)) + ggtitle('AIC vs. K for TTM-HAR-e RS Model')
+
+fitmat <- optHarmonics(data = FirstDecNearby, RM = 'RK')
+data.frame(fitmat[,c(1,9)]) %>% ggplot() + geom_point(aes(x = K, y = AIC)) + geom_line(aes(x = K, y = AIC)) + scale_x_continuous(breaks = seq(from=0, to=10,by=2)) + ggtitle('AIC vs. K for TTM-HAR-RK Model')
+
+fitmat <- optHarmonics.eps(data = FirstDecNearby, RM = 'RK')
+data.frame(fitmat[,c(1,6)]) %>% ggplot() + geom_point(aes(x = K, y = AIC)) + geom_line(aes(x = K, y = AIC)) + scale_x_continuous(breaks = seq(from=0, to=10,by=2)) + ggtitle('AIC vs. K for TTM-HAR-e RK Model')
+```
+

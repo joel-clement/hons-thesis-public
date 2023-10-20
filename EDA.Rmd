@@ -1,0 +1,264 @@
+---
+title: "EDA"
+author: "Joel Clement"
+date: "2023-08-14"
+output: pdf_document
+---
+
+```{r label = 'Library Invokation'}
+start = Sys.time()
+library(Hmisc) # accessing describe()
+library(tidyverse) # ggplot, dplyr, and other functionality
+library(scales) # aesthetic scaling for ggplots
+library(lubridate) # date/timestamp data handling
+library(forecast) # forecasting tools
+library(qlcal) # trading calendar tools
+library(stats) # stats/modelling tools e.g. AIC/BIC
+library(highfrequency) # estimating HAR model
+library(zoo) # rollmean()
+library(xts) # used for highfrequency package's HAR model estimation
+library(tseries) # jarque-bera test
+library(leaps) #subset selection
+library(dgof) #K-S test
+library(quarks) # VaR and ES backtesting tools
+print(Sys.time() - start)
+```
+
+```{r label = 'Setting Parameters'}
+maxTTM <- 252
+#Creating ICE London Business Calendar
+setCalendar("UnitedKingdom")
+```
+
+```{r label = 'Reading Processed Data'}
+AllRV <- read_csv('../Data/Processed/AllRV.csv', col_types = c('D', 'f', rep('n', 8)))
+DecRV <- read_csv('../Data/Processed/DecRV.csv', col_types = c('D', 'f', rep('n', 12)))
+DecReturns <- read_csv('../Data/Processed/DecReturns.csv', col_types = c('f', 't', rep('n', 6)))
+ExpiryMapping <- read_csv('../Data/Processed/ExpiryMapping.csv', col_types = c('c', 'D', 'D'))
+FirstDecNearby <- read_csv('../Data/Processed/FirstDecNearby.csv', col_types = c('D', 'c', rep('n', 12), rep('D', 6)))
+SecondDecNearby <- read_csv('../Data/Processed/SecondDecNearby.csv', col_types = c('D', 'c', rep('n', 12), rep('D', 6)))
+```
+
+#EDA
+
+```{r label = 'Investigating Daily Trading Volume'}
+DecRV %>% filter(DaystoMaturity < 730) %>% ggplot() + geom_point(aes(x = DaystoMaturity, y = Volume))
+
+DecRV %>% filter(DaystoMaturity < 730) %>% ggplot() + geom_point(aes(x = DaystoMaturity, y = NumBlocksTraded))
+#last 2 years all have non zero total daily volume (# of trades). however, many have less than all blocks traded
+
+DecRV %>% filter(between(DaystoMaturity, 350, 730)) %>% ggplot() + geom_point(aes(x = DaystoMaturity, y = Volume))
+
+DecRV %>% filter(between(DaystoMaturity, 350, 730), RIC %in% c('CFI2Z3', 'CFI2Z4', 'CFI2Z5', 'CFI2Z6')) %>% ggplot() + geom_point(aes(x = DaystoMaturity, y = NumBlocksTraded, col = RIC))
+
+DecRV %>% filter(between(DaystoMaturity, 350, 730), RIC %in% c('CFI2Z8^1', 'CFI2Z9^1', 'CFI2Z0^2', 'CFI2Z1^2')) %>% ggplot() + geom_point(aes(x = DaystoMaturity, y = NumBlocksTraded, col = RIC))
+
+DecRV %>% filter(between(DaystoMaturity, 350, 730), RIC %in% c('CFI2Z4^1', 'CFI2Z5^1', 'CFI2Z6^1', 'CFI2Z7^1')) %>% ggplot() + geom_point(aes(x = DaystoMaturity, y = NumBlocksTraded))
+```
+
+```{r label = 'More examining trading volume (TTM vs Vol.)'}
+DecRV %>% filter(DaystoMaturity < 500 & RIC %in% c('CFI2Z1^2', 'CFI2Z2^2', 'CFI2Z3', 'CFI2Z4')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = RV, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 252, alpha = 0.5) + geom_vline(xintercept = 262, alpha = 0.5) + geom_vline(xintercept = 10, alpha = 0.5)
+DecRV %>% filter(DaystoMaturity < 500 & RIC %in% c('CFI2Z1^2', 'CFI2Z2^2', 'CFI2Z3', 'CFI2Z4')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = NumBlocksTraded, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 252, alpha = 0.5) + geom_vline(xintercept = 262, alpha = 0.5)
+
+DecRV %>% filter(between(DaystoMaturity, 180, 300) & RIC %in% c('CFI2Z1^2', 'CFI2Z2^2', 'CFI2Z3', 'CFI2Z4')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = RV, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 262, alpha = 0.5)
+DecRV %>% filter(between(DaystoMaturity, 180, 300) & RIC %in% c('CFI2Z1^2', 'CFI2Z2^2', 'CFI2Z3', 'CFI2Z4')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = NumBlocksTraded, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 262, alpha = 0.5)
+
+DecRV %>% filter(between(DaystoMaturity, 180, 300) & RIC %in% c('CFI2Z8^1', 'CFI2Z9^1', 'CFI2Z0^2')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = Volume, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 242, alpha = 0.5)
+DecRV %>% filter(between(DaystoMaturity, 180, 300) & RIC %in% c('CFI2Z8^1', 'CFI2Z9^1', 'CFI2Z0^2', 'CFI2Z1^2')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = NumBlocksTraded, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 262, alpha = 0.5)
+
+DecRV %>% filter(DaystoMaturity < 500 & RIC %in% c('CFI2Z5^1', 'CFI2Z6^1', 'CFI2Z7^1')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = Volume, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 262, alpha = 0.5)
+DecRV %>% filter(DaystoMaturity < 500 & RIC %in% c('CFI2Z5^1', 'CFI2Z6^1', 'CFI2Z7^1')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = NumBlocksTraded, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 262, alpha = 0.5)
+
+DecRV %>% filter(between(DaystoMaturity, 180, 300) & RIC %in% c('CFI2Z5^1', 'CFI2Z6^1', 'CFI2Z7^1')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = Volume, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 262, alpha = 0.5)
+DecRV %>% filter(between(DaystoMaturity, 180, 300) & RIC %in% c('CFI2Z5^1', 'CFI2Z6^1', 'CFI2Z7^1')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = NumBlocksTraded, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 262, alpha = 0.5)
+
+DecRV %>% filter(DaystoMaturity < 252) %>% select(Volume, NumBlocksTraded) %>% summary()
+```
+
+```{r label = 'More examining trading volume (Date vs Vol.)'}
+
+DecRV %>% filter(between(DaystoMaturity, 0, 300) & RIC %in% c('CFI2Z1^2', 'CFI2Z2^2', 'CFI2Z3', 'CFI2Z4')) %>% ggplot() + geom_line(aes(x = Date, y = Volume, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = date('2020-12-01'), alpha = 0.5) + geom_vline(xintercept = date('2021-12-01'), alpha = 0.5) + geom_vline(xintercept = date('2022-12-01'), alpha = 0.5)
+DecRV %>% filter(between(DaystoMaturity, 0, 300) & RIC %in% c('CFI2Z1^2', 'CFI2Z2^2', 'CFI2Z3', 'CFI2Z4')) %>% ggplot() + geom_line(aes(x = Date, y = NumBlocksTraded, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = date('2020-12-01'), alpha = 0.5) + geom_vline(xintercept = date('2021-12-01'), alpha = 0.5) + geom_vline(xintercept = date('2022-12-01'), alpha = 0.5)
+
+DecRV %>% filter(between(DaystoMaturity, 0, 300) & RIC %in% c('CFI2Z8^1', 'CFI2Z9^1', 'CFI2Z0^2')) %>% ggplot() + geom_line(aes(x = Date, y = Volume, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = date('2017-12-01'), alpha = 0.5) + geom_vline(xintercept = date('2018-12-01'), alpha = 0.5) + geom_vline(xintercept = date('2019-12-01'), alpha = 0.5) + geom_vline(xintercept = date('2020-12-01'), alpha = 0.5)
+DecRV %>% filter(between(DaystoMaturity, 0, 300) & RIC %in% c('CFI2Z8^1', 'CFI2Z9^1', 'CFI2Z0^2', 'CFI2Z1^2')) %>% ggplot() + geom_line(aes(x = Date, y = NumBlocksTraded, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = date('2017-12-01'), alpha = 0.5) + geom_vline(xintercept = date('2018-12-01'), alpha = 0.5) + geom_vline(xintercept = date('2019-12-01'), alpha = 0.5) + geom_vline(xintercept = date('2020-12-01'), alpha = 0.5)
+
+DecRV %>% filter(between(DaystoMaturity, 0, 300) & RIC %in% c('CFI2Z5^1', 'CFI2Z6^1', 'CFI2Z7^1')) %>% ggplot() + geom_line(aes(x = Date, y = Volume, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = date('2014-12-01'), alpha = 0.5) + geom_vline(xintercept = date('2015-12-01'), alpha = 0.5) + geom_vline(xintercept = date('2016-12-01'), alpha = 0.5) + geom_vline(xintercept = date('2017-12-01'), alpha = 0.5)
+DecRV %>% filter(between(DaystoMaturity, 0, 300) & RIC %in% c('CFI2Z5^1', 'CFI2Z6^1', 'CFI2Z7^1')) %>% ggplot() + geom_line(aes(x = Date, y = NumBlocksTraded, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = date('2014-12-01'), alpha = 0.5) + geom_vline(xintercept = date('2015-12-01'), alpha = 0.5) + geom_vline(xintercept = date('2016-12-01'), alpha = 0.5) + geom_vline(xintercept = date('2017-12-01'), alpha = 0.5)
+```
+
+```{r label = 'Examining Rolled RV Series'}
+FirstDecNearby %>% filter(year(Date) > 2019) %>% ggplot() + geom_line(aes(x = Date, y = Volume), col = "red", alpha = 0.4)
+FirstDecNearby %>% filter(year(Date) > 2019) %>% ggplot() + geom_point(aes(x = DaystoMaturity, y = Volume), col = "red", alpha = 0.4)
+FirstDecNearby %>% ggplot() + geom_line(aes(x = Date, y = log(RV)), col = "blue", alpha = 0.4)
+FirstDecNearby %>% filter(year(Date) > 2018) %>% ggplot() + geom_line(aes(x = Date, y = scale(Volume)), col = "red", alpha = 0.4) + geom_line(aes(x = Date, y = log(RV)), col = "blue", alpha = 0.4)
+ggplot() + geom_line(data = FirstDecNearby, aes(x = Date, y = Volume/(5*10^3)), col = "red", alpha = 0.4) + geom_line(data = FirstDecNearby, aes(x = Date, y = scale(RV)), col = "blue", alpha = 0.4) + geom_line(data = SecondDecNearby, aes(x = Date, y = Volume/(10^3)), col = "red", alpha = 0.4, linetype = "dashed") + geom_line(data = SecondDecNearby, aes(x = Date, y = scale(RV)), col = "blue", alpha = 0.4, linetype = "dashed")
+cor(FirstDecNearby$RV, FirstDecNearby$Volume)
+cor(log(FirstDecNearby$RV), FirstDecNearby$Volume)
+```
+
+```{r label = 'Comparing realised moments'}
+FirstDecNearby %>% filter(year(Date) > 2018) %>% ggplot() + geom_line(aes(x = Date, y = logRet), col = "black", alpha = 1)
+FirstDecNearby %>% filter(year(Date) > 2018) %>% ggplot() + geom_line(aes(x = Date, y = log(RV)), col = "red", alpha = 0.8)
+FirstDecNearby %>% filter(year(Date) > 2018) %>% ggplot() + geom_line(aes(x = Date, y = RS), col = "blue", alpha = 0.4)
+FirstDecNearby %>% filter(year(Date) > 2018) %>% ggplot() + geom_line(aes(x = Date, y = log(log(RK))), col = "black", alpha = 0.4)
+
+FirstDecNearby %>% ggplot() + geom_point(aes(x = Date, y = logRet))
+FirstDecNearby %>% ggplot() + geom_point(aes(x = Date, y = log(RV)))
+FirstDecNearby %>% ggplot() + geom_point(aes(x = Date, y = RS))
+FirstDecNearby %>% ggplot() + geom_point(aes(x = Date, y = log(RK)))
+
+FirstDecNearby %>% filter(year(Date) > 2018) %>% ggplot() + geom_line(aes(x = Date, y = log(RV)), col = "red", alpha = 0.4) + geom_line(aes(x = Date, y = RS), col = "blue", alpha = 0.4) + geom_line(aes(x = Date, y = log(RK)), col = "black", alpha = 0.4)
+
+FirstDecNearby %>% group_by(week(Date), year(Date)) %>% summarise(RK = mean(log(RK)), Week = min(Date)) %>% ggplot() + geom_point(aes(x = Week, y = RK)) + geom_line(aes(x = Week, y = RK))
+
+FirstDecNearby %>% ggplot() + geom_point(aes(x = DaystoMaturity, y = log(RK))) + geom_smooth(aes(x = DaystoMaturity, y = log(RK)))
+FirstDecNearby %>% ggplot() + geom_point(aes(x = DaystoMaturity, y = RS)) + geom_smooth(aes(x = DaystoMaturity, y = RS))
+FirstDecNearby %>% ggplot() + geom_point(aes(x = DaystoMaturity, y = log(RV))) + geom_smooth(aes(x = DaystoMaturity, y = log(RV)))
+FirstDecNearby %>% ggplot() + geom_point(aes(x = DaystoMaturity, y = log(m3)))
+FirstDecNearby %>% ggplot() + geom_point(aes(x = DaystoMaturity, y = log(m4))) + geom_smooth(aes(x = DaystoMaturity, y = log(m4)))
+
+FirstDecNearby %>% ggplot() + geom_point(aes(x = RK, y = RS))
+hist(FirstDecNearby$logRet, breaks = 60)
+```
+
+```{r label = '(P)ACFs'}
+hist(FirstDecNearby$RV, breaks = 50)
+hist(FirstDecNearby$RS, breaks = 50)
+hist(FirstDecNearby$RK, breaks = 50)
+
+acf(log(FirstDecNearby$RV), lag.max = maxTTM)
+pacf(log(FirstDecNearby$RV), lag.max = maxTTM)
+acf(log(FirstDecNearby$RV), lag.max = 50)
+pacf(log(FirstDecNearby$RV), lag.max = 50)
+hist(log(FirstDecNearby$RV), breaks = 50)
+
+acf(FirstDecNearby$RS, lag.max = maxTTM)
+pacf(FirstDecNearby$RS, lag.max = maxTTM)
+acf(FirstDecNearby$RS, lag.max = 50)
+pacf(FirstDecNearby$RS, lag.max = 50)
+hist(FirstDecNearby$RS, breaks = 50)
+
+acf(FirstDecNearby$m3, lag.max = maxTTM)
+pacf(FirstDecNearby$m3, lag.max = maxTTM) #AR(38)?
+acf(FirstDecNearby$m3, lag.max = 50)
+pacf(FirstDecNearby$m3, lag.max = 50)
+hist(FirstDecNearby$m3, breaks = 50)
+
+acf(log(FirstDecNearby$RK), lag.max = maxTTM)
+pacf(log(FirstDecNearby$RK), lag.max = maxTTM)
+acf(log(FirstDecNearby$RK), lag.max = 50)
+pacf(log(FirstDecNearby$RK), lag.max = 50)
+hist(log(FirstDecNearby$RK), breaks = 50)
+
+acf(log(FirstDecNearby$m4), lag.max = maxTTM)
+pacf(log(FirstDecNearby$m4), lag.max = maxTTM)
+acf(log(FirstDecNearby$m4), lag.max = 50)
+pacf(log(FirstDecNearby$m4), lag.max = 50)
+hist(log(FirstDecNearby$m4), breaks = 50)
+```
+
+We see that pretty much all days have sufficient volume/blocks, but may need to handle a small number of edge cases with few trades. as such, we will create daily RV estimates with n blocks as:
+keeping in mind that some days have weird cases with > 40 blocks, this method assumes, with this averaging, that all blocks are "equivalent" and directly comparable.
+
+```{r label = 'Comparing frequencies of numbers of blocks in days (many finish 5-15min early)'}
+DecReturns %>% filter(DaystoMaturity < 320) %>% group_by(as.Date(Time)) %>% summarise(Duration = as.integer(difftime(max(Time), min(Time), units = "mins"))/15) %>% select(Duration) %>% table
+
+DecReturns %>% filter(DaystoMaturity <= 320) %>% group_by(as.Date(Time)) %>% summarise(Duration = as.integer(difftime(max(Time), min(Time), units = "mins"))/15) %>% select(Duration) %>% table
+
+DecReturns %>% filter(DaystoMaturity < 320) %>% group_by(as.Date(Time)) %>% summarise(start = min(Time), end = max(Time), duration = as.integer(difftime(max(Time), min(Time), units = "mins"))/15) %>% tail(100)
+```
+
+```{r label = 'Some Plotting'}
+DecRV %>% ggplot() + geom_point(aes(x = Date, y = log(RV))) + facet_wrap(vars(RIC))
+ggplot(data = DecRV[DecRV$RIC == 'CFI2Z2^2', ]) + geom_point(aes(x = Date, y = log(RV))) + geom_vline(xintercept = date('2018-09-10')) + geom_vline(xintercept = date('2019-09-10')) + scale_x_date(date_breaks = "6 months") + facet_wrap(vars(RIC))
+ggplot(data = DecRV) + geom_point(aes(x = Date, y = logRet)) + facet_wrap(vars(RIC))
+ggplot(data = DecRV) + geom_point(aes(x = Date, y = log(Volume))) + facet_wrap(vars(RIC))
+DecRV %>% filter(RIC %in% c('CFI2Z3', 'CFI2Z2^2', 'CFI2Z4^1', 'CFI2Z4', 'CFI2Z5', 'CFI2Z6', 'CFI2Z5^1', 'CFI2Z6^1', 'CFI2Z7^1', 'CFI2Z7', 'CFI2Z1^2', 'CFI2Z8^1', 'CFI2Z9^1', 'CFI2Z0^2'), Volume > 100) %>% ggplot() + geom_point(aes(x = DaystoMaturity, y = log(RV), col = RIC))
+```
+
+```{r label = 'Examining volume of quarterly contracts'}
+
+AllRV %>% filter(DaystoMaturity < 730 & RIC %in% c('CFI2H2^2')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = Volume, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 365)
+AllRV %>% filter(DaystoMaturity < 730 & RIC %in% c('CFI2H2^2')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = NumBlocksTraded, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 365)
+AllRV %>% filter(DaystoMaturity < 730 & RIC %in% c('CFI2H8^1', 'CFI2H9^1', 'CFI2H0^2', 'CFI2H1^2', 'CFI2H2^2')) %>% summary
+
+AllRV %>% filter(DaystoMaturity < 730 & RIC %in% c('CFI2M8^1', 'CFI2M9^1', 'CFI2M0^2', 'CFI2M1^2', 'CFI2M2^2')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = Volume, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 365)
+AllRV %>% filter(DaystoMaturity < 730 & RIC %in% c('CFI2M8^1', 'CFI2M9^1', 'CFI2M0^2', 'CFI2M1^2', 'CFI2M2^2')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = NumBlocksTraded, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 365)
+AllRV %>% filter(DaystoMaturity < 730 & RIC %in% c('CFI2M8^1', 'CFI2M9^1', 'CFI2M0^2', 'CFI2M1^2', 'CFI2M2^2')) %>% summary
+
+AllRV %>% filter(DaystoMaturity < 730 & RIC %in% c('CFI2U8^1', 'CFI2U9^1', 'CFI2U0^2', 'CFI2U1^2', 'CFI2U2^2')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = Volume, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 365)
+AllRV %>% filter(DaystoMaturity < 730 & RIC %in% c('CFI2U8^1', 'CFI2U9^1', 'CFI2U0^2', 'CFI2U1^2', 'CFI2U2^2')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = NumBlocksTraded, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 365)
+AllRV %>% filter(DaystoMaturity < 730 & RIC %in% c('CFI2U8^1', 'CFI2U9^1', 'CFI2U0^2', 'CFI2U1^2', 'CFI2U2^2')) %>% summary
+
+AllRV %>% filter(DaystoMaturity < 730 & RIC %in% c('CFI2Z8^1', 'CFI2Z9^1', 'CFI2Z0^2', 'CFI2Z1^2', 'CFI2Z2^2')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = Volume, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 365)
+AllRV %>% filter(DaystoMaturity < 730 & RIC %in% c('CFI2Z8^1', 'CFI2Z9^1', 'CFI2Z0^2', 'CFI2Z1^2', 'CFI2Z2^2')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = NumBlocksTraded, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 365)
+AllRV %>% filter(DaystoMaturity < 730 & RIC %in% c('CFI2Z8^1', 'CFI2Z9^1', 'CFI2Z0^2', 'CFI2Z1^2', 'CFI2Z2^2')) %>% summary
+```
+
+```{r label = '1/4 contracts: zooming in on sub-1 yr TTM'}
+
+AllRV %>% filter(DaystoMaturity < 365 & RIC %in% c('CFI2H8^1', 'CFI2H9^1', 'CFI2H0^2', 'CFI2H1^2', 'CFI2H2^2')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = Volume, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 365)
+AllRV %>% filter(DaystoMaturity < 365 & RIC %in% c('CFI2H8^1', 'CFI2H9^1', 'CFI2H0^2', 'CFI2H1^2', 'CFI2H2^2')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = NumBlocksTraded, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 365)
+AllRV %>% filter(DaystoMaturity < 365 & RIC %in% c('CFI2H8^1', 'CFI2H9^1', 'CFI2H0^2', 'CFI2H1^2', 'CFI2H2^2')) %>% summary
+
+AllRV %>% filter(DaystoMaturity < 365 & RIC %in% c('CFI2M8^1', 'CFI2M9^1', 'CFI2M0^2', 'CFI2M1^2', 'CFI2M2^2')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = Volume, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 365)
+AllRV %>% filter(DaystoMaturity < 365 & RIC %in% c('CFI2M8^1', 'CFI2M9^1', 'CFI2M0^2', 'CFI2M1^2', 'CFI2M2^2')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = NumBlocksTraded, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 365)
+AllRV %>% filter(DaystoMaturity < 365 & RIC %in% c('CFI2M8^1', 'CFI2M9^1', 'CFI2M0^2', 'CFI2M1^2', 'CFI2M2^2')) %>% summary
+
+AllRV %>% filter(DaystoMaturity < 365 & RIC %in% c('CFI2U8^1', 'CFI2U9^1', 'CFI2U0^2', 'CFI2U1^2', 'CFI2U2^2')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = Volume, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 365)
+AllRV %>% filter(DaystoMaturity < 365 & RIC %in% c('CFI2U8^1', 'CFI2U9^1', 'CFI2U0^2', 'CFI2U1^2', 'CFI2U2^2')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = NumBlocksTraded, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 365)
+AllRV %>% filter(DaystoMaturity < 365 & RIC %in% c('CFI2U8^1', 'CFI2U9^1', 'CFI2U0^2', 'CFI2U1^2', 'CFI2U2^2')) %>% summary
+
+AllRV %>% filter(DaystoMaturity < 365 & RIC %in% c('CFI2Z8^1', 'CFI2Z9^1', 'CFI2Z0^2', 'CFI2Z1^2', 'CFI2Z2^2')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = Volume, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 365)
+AllRV %>% filter(DaystoMaturity < 365 & RIC %in% c('CFI2Z8^1', 'CFI2Z9^1', 'CFI2Z0^2', 'CFI2Z1^2', 'CFI2Z2^2')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = NumBlocksTraded, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 365)
+AllRV %>% filter(DaystoMaturity < 365 & RIC %in% c('CFI2Z8^1', 'CFI2Z9^1', 'CFI2Z0^2', 'CFI2Z1^2', 'CFI2Z2^2')) %>% summary
+```
+
+
+```{r Important Plots}
+FirstDecNearby %>% ggplot() + geom_line(aes(x = Date, y = logRet), col = "black", alpha = 1) + ylab('Daily Log-Returns')
+FirstDecNearby %>% ggplot() + geom_line(aes(x = Date, y = RV), col = "black", alpha = 1) + ylab('Daily RV')
+FirstDecNearby %>% ggplot() + geom_line(aes(x = Date, y = log(RV)), col = "black", alpha = 1) + ylab('Log of Daily RV')
+FirstDecNearby %>% ggplot() + geom_line(aes(x = Date, y = RS), col = "black", alpha = 1) + ylab('Daily RS')
+FirstDecNearby %>% ggplot() + geom_line(aes(x = Date, y = RK), col = "black", alpha = 1) + ylab('Daily RK')
+FirstDecNearby %>% ggplot() + geom_line(aes(x = Date, y = log(RK)), col = "black", alpha = 1) + ylab('Log of Daily RK')
+
+FirstDecNearby %>% ggplot() + geom_histogram(aes(x = logRet), bins = 100, colour = 'black', fill = 'lightblue') + xlab('Log of Daily Returns') + ylab('Frequency') + ggtitle('Histogram of Daily Log-Returns')
+acf(FirstDecNearby$logRet, lag.max = 50, main = 'ACF of Daily Log-Returns')
+pacf(FirstDecNearby$logRet, lag.max = 50, main = 'PACF of Daily Log-Returns')
+
+FirstDecNearby %>% ggplot() + geom_histogram(aes(x = log(RV)), bins = 100, colour = 'black', fill = 'lightblue') + xlab('Log of Daily Realised Variance') + ylab('Frequency') + ggtitle('Histogram of Log of Daily Realised Variance')
+acf(log(FirstDecNearby$RV), lag.max = 50, main = 'ACF of Log of Daily RV')
+pacf(log(FirstDecNearby$RV), lag.max = 50, main = 'PACF of Log of Daily RV')
+
+
+FirstDecNearby %>% ggplot() + geom_histogram(aes(x = RS), bins = 100, colour = 'black', fill = 'lightblue') + xlab('Log of Daily RS') + ylab('Frequency') + ggtitle('Histogram of Daily RS')
+acf(FirstDecNearby$RS, lag.max = 50, main = 'ACF of Daily RS')
+pacf(FirstDecNearby$RS, lag.max = 50, main = 'PACF of Daily RS')
+
+
+FirstDecNearby %>% ggplot() + geom_histogram(aes(x = log(RK)), bins = 100, colour = 'black', fill = 'lightblue') + xlab('Log of Daily RK') + ylab('Frequency') + ggtitle('Histogram of Log of Daily RK')
+acf(log(FirstDecNearby$RK), lag.max = 50, main = 'ACF of Log of Daily RK')
+pacf(log(FirstDecNearby$RK), lag.max = 50, main = 'PACF of Log of Daily RK')
+
+dplyr::left_join(AllRV, ExpiryMapping, by=join_by(RIC)) %>% filter(DaystoMaturity < 270 & RIC %in% c('CFI2H2^2', 'CFI2M2^2', 'CFI2U2^2', 'CFI2Z2^2')) %>% mutate(Expiry = paste(month.abb[month(Last.Trading.Day)], as.character(year(Last.Trading.Day)), sep=' ')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = Volume, group = Expiry, col = Expiry)) + geom_vline(xintercept = 10, alpha = 0.5) + geom_vline(xintercept = 262, alpha = 0.5) + scale_y_continuous(trans = 'sqrt')
+
+dplyr::left_join(AllRV, ExpiryMapping, by=join_by(RIC)) %>% filter(DaystoMaturity < 270 & RIC %in% c('CFI2H2^2', 'CFI2M2^2', 'CFI2U2^2', 'CFI2Z2^2')) %>% mutate(Expiry = paste(month.abb[month(Last.Trading.Day)], as.character(year(Last.Trading.Day)), sep=' ')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = NumBlocksTraded, group = Expiry, col = Expiry)) + geom_vline(xintercept = 10, alpha = 0.5) + geom_vline(xintercept = 262, alpha = 0.5)
+
+DecRV %>% filter(DaystoMaturity < 270 & RIC %in% c('CFI2Z1^2', 'CFI2Z2^2', 'CFI2Z3')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = Volume, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 10, alpha = 0.5) + geom_vline(xintercept = 262, alpha = 0.5)
+DecRV %>% filter(DaystoMaturity < 270 & RIC %in% c('CFI2Z8^1', 'CFI2Z9^1', 'CFI2Z0^2')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = Volume, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 10, alpha = 0.5) + geom_vline(xintercept = 262, alpha = 0.5)
+DecRV %>% filter(DaystoMaturity < 270 & RIC %in% c('CFI2Z5^1', 'CFI2Z6^1', 'CFI2Z7^1')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = Volume, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 10, alpha = 0.5) + geom_vline(xintercept = 262, alpha = 0.5)
+
+DecRV %>% filter(DaystoMaturity < 270 & RIC %in% c('CFI2Z1^2', 'CFI2Z2^2', 'CFI2Z3')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = NumBlocksTraded, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 10, alpha = 0.5) + geom_vline(xintercept = 262, alpha = 0.5)
+DecRV %>% filter(DaystoMaturity < 270 & RIC %in% c('CFI2Z8^1', 'CFI2Z9^1', 'CFI2Z0^2')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = NumBlocksTraded, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 10, alpha = 0.5) + geom_vline(xintercept = 262, alpha = 0.5)
+DecRV %>% filter(DaystoMaturity < 270 & RIC %in% c('CFI2Z5^1', 'CFI2Z6^1', 'CFI2Z7^1')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = NumBlocksTraded, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 10, alpha = 0.5) + geom_vline(xintercept = 262, alpha = 0.5)
+
+
+DecRV %>% filter(between(DaystoMaturity, 180, 300) & RIC %in% c('CFI2Z1^2', 'CFI2Z2^2', 'CFI2Z3')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = Volume, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 262, alpha = 0.5)
+DecRV %>% filter(between(DaystoMaturity, 180, 300) & RIC %in% c('CFI2Z8^1', 'CFI2Z9^1', 'CFI2Z0^2')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = Volume, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 262, alpha = 0.5)
+DecRV %>% filter(between(DaystoMaturity, 180, 300) & RIC %in% c('CFI2Z5^1', 'CFI2Z6^1', 'CFI2Z7^1')) %>% ggplot() + geom_line(aes(x = DaystoMaturity, y = Volume, group = RIC, col = RIC, linetype = RIC)) + geom_vline(xintercept = 262, alpha = 0.5)
+
+
+```
+

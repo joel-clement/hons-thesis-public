@@ -1,0 +1,614 @@
+---
+title: "MomentModelAnalysis"
+author: "Joel Clement"
+date: "2023-08-14"
+output: pdf_document
+---
+
+```{r label = 'Library Invokation'}
+start = Sys.time()
+library(tidyverse) # ggplot, dplyr, and other functionality
+library(scales) # aesthetic scaling for ggplots
+library(lubridate) # date/timestamp data handling
+library(forecast) # forecasting tools
+library(qlcal) # trading calendar tools
+library(stats) # stats/modelling tools e.g. AIC/BIC
+library(highfrequency) # estimating HAR model
+library(zoo) # rollmean()
+library(xts) # used for highfrequency package's HAR model estimation
+library(tseries) # jarque-bera test
+library(leaps) #subset selection
+library(dgof) #K-S test
+library(quarks) # VaR and ES backtesting tools
+library(data.table) #just to use melt() tbh
+# library(data.table) #pref not to use it but helpful for quickly creating many lagged vars
+# install.packages("rstan", repos = c("https://mc-stan.org/r-packages/", getOption("repos")))
+# library(rstan)
+print(Sys.time() - start)
+```
+
+```{r label = 'Setting Parameters'}
+maxTTM <- 252
+#Creating ICE London Business Calendar
+setCalendar("UnitedKingdom")
+qlcal::businessDaysBetween(as.Date("2023-01-01"), as.Date("2023-12-31"))
+knitr::opts_knit$set(root.dir = normalizePath('..')) #setting root directory for file management purposes
+knitr::opts_knit$get("root.dir")
+```
+
+```{r label = 'Reading Processed Data'}
+# setwd('..')
+AllRS <- read_csv('../Data/Processed/AllRV.csv', col_types = c('D', 'f', rep('n', 8))) #run code to write processed 'AllRV.csv' before
+DecRV <- read_csv('../Data/Processed/DecRV.csv', col_types = c('D', 'f', rep('n', 12)))
+DecReturns <- read_csv('../Data/Processed/DecReturns.csv', col_types = c('f', 't', rep('n', 6)))
+ExpiryMapping <- read_csv('../Data/Processed/ExpiryMapping.csv', col_types = c('c', 'D', 'D'))
+FirstDecNearby <- read_csv('../Data/Processed/FirstDecNearby.csv', col_types = c('D', 'c', rep('n', 12), rep('D', 6)))
+SecondDecNearby <- read_csv('../Data/Processed/SecondDecNearby.csv', col_types = c('D', 'c', rep('n', 12), rep('D', 6)))
+```
+
+```{r label = 'Importing Custom Functions'}
+source("../Analysis/MomentModelBuilding.R")
+```
+
+```{r label = 'hyp. test functions'}
+hypTests <- function(data, RM = 'RV', K = 0, method='BFGS')
+  
+{
+  print(paste0("Conducting Tests for RM = ", RM, " @ K = ", K))
+  print("------------------------------------------------------------------------------------------")
+  
+  #HAR-RM Model: TTM Effect LR test
+  print("1: Do TTM Effects Provide Significant Benefit Over Intercept Term? LR-TEST:")
+  print('H0: TTM coefs = 0')
+  print('H1: TTM coefs =/= 0')
+  trigmodel <- TTM.HAR_RM.fit(data = data, RM = RM, K = K, onestep = FALSE)$trigmodel
+  minmodel <- modData(data = data, RM = RM, K = 0, onestep = TRUE) %>% lm(formula = formula(get(RM) ~ 1))
+  teststat <- as.numeric(-2 * (logLik(minmodel) - logLik(trigmodel)))
+  
+  df <- length(trigmodel$coefficients) - length(minmodel$coefficients)
+  
+  print("Test Statistic")
+  print(teststat)
+  print("99% Critical Value")
+  print(qchisq(0.01, df=df, lower.tail = FALSE))
+  print("P-Value")
+  print(pchisq(teststat, df=df, lower.tail = FALSE))
+  print("------------------------------------------------------------------------------------------")
+  
+  print("2: Do HAR effects provide significant benefit over intercept term? LR-TEST:")
+  print('H0: HAR effects provide little substantial benefit over intercept term. har coefs = 0')
+  print('H1: HAR effects do provide substantial benefit. har coefs =/= 0')
+  mod.data <- modData(data, RM = RM, K = K, onestep = FALSE)
+  harmodel <- HARmodel(xts(pull(mod.data, RM), order.by = mod.data$Date, type = 'HAR', inputType = 'RM'))
+  minmodel <- modData(data, RM = RM, K = K, onestep = TRUE) %>% lm(formula = formula(get(RM) ~ 1))
+  
+  teststat <- as.numeric(-2 * (logLik(minmodel) - logLik(harmodel)))
+  
+  df <- length(harmodel$coefficients) - length(minmodel$coefficients)
+  
+  print("Test Statistic")
+  print(teststat)
+  print("99% Critical Value")
+  print(qchisq(0.01, df=df, lower.tail = FALSE))
+  print("P-Value")
+  print(pchisq(teststat, df=df, lower.tail = FALSE))
+  print("------------------------------------------------------------------------------------------") 
+  
+  print("3: Do the TTM factors improve the fit over just the HAR model? HAR-RM vs. TTM + HAR-RM LR TEST:")
+  print("H0: HAR model fit reflects best i.e. trig + linear coefs = 0")
+  print("H1: maximal model reflects best i.e. trig + linear coefs =/= 0")
+  
+  maxmodel <- TTM.HAR_RM.fit(data = data, RM = RM, K = K, onestep = TRUE)
+  harmodel <- modData(data, RM = RM, K = K, onestep = TRUE) %>% lm(formula = formula(get(RM) ~ get(paste0(RM, '_D')) + get(paste0(RM, '_W')) + get(paste0(RM, '_M'))))
+  teststat <- as.numeric(-2 * (logLik(harmodel) - logLik(maxmodel)))
+  df <- maxmodel$rank - harmodel$rank
+  
+  print("LOGLIKELIHOOD: MAXMODEL")
+  print(logLik(maxmodel))
+  
+  print("LOGLIKELIHOOD: JUST HAR")
+  print(logLik(harmodel))
+  
+  print("5% CRIT. VAL.:")
+  critval <- qchisq(0.05, df, lower.tail = FALSE)
+  print(critval)
+  print("1% CRIT. VAL.:")
+  critval <- qchisq(0.01, df, lower.tail = FALSE)
+  print(critval)
+  print("0.1% CRIT. VAL.:")
+  critval <- qchisq(0.001, df, lower.tail = FALSE)
+  print(critval)
+  print("TEST STAT:")
+  print(teststat)
+  print("P-VAL")
+  print(pchisq(teststat, df, lower.tail = FALSE))
+  print("------------------------------------------------------------------------------------------") 
+  
+  print("4: Does the seasonal effect significantly improve the model over the linear TTM effect (excluding HAR model)? LR TEST:")
+  print('H0: trig coefs = 0')
+  print('H1: trig coefs =/= 0')
+  
+  maxmodel <- TTM.HAR_RM.fit(data = data, RM = RM, K = K, onestep = FALSE)$trigmodel
+  linmodel <- TTM.HAR_RM.fit(data = data, RM = RM, K = 0, onestep = FALSE)$trigmodel
+  teststat <- as.numeric(-2 * (logLik(linmodel) - logLik(maxmodel)))
+  df <- maxmodel$rank - linmodel$rank
+  
+  print("95% CRIT. VAL.:")
+  critval <- qchisq(0.05, df, lower.tail = FALSE)
+  print(critval)
+  print("99% CRIT. VAL.:")
+  critval <- qchisq(0.01, df, lower.tail = FALSE)
+  print(critval)
+  print("99.9% CRIT. VAL.:")
+  critval <- qchisq(0.001, df, lower.tail = FALSE)
+  print(critval)
+  print("TEST STAT:")
+  print(teststat)
+  print("P-VAL")
+  print(pchisq(teststat, df, lower.tail = FALSE))
+  print("------------------------------------------------------------------------------------------")
+  
+  print("5: How about in the presence of HAR? Use the TTM-HAR-RM model.")
+  maxmodel <- TTM.HAR_RM.fit(data = data, RM = RM, K = K, onestep = TRUE)
+  linmodel <- TTM.HAR_RM.fit(data = data, RM = RM, K = 0, onestep = TRUE)
+  teststat <- as.numeric(-2 * (logLik(linmodel) - logLik(maxmodel)))
+  df <- maxmodel$rank - linmodel$rank
+  
+  print("95% CRIT. VAL.:")
+  critval <- qchisq(0.05, df, lower.tail = FALSE)
+  print(critval)
+  print("99% CRIT. VAL.:")
+  critval <- qchisq(0.01, df, lower.tail = FALSE)
+  print(critval)
+  print("99.9% CRIT. VAL.:")
+  critval <- qchisq(0.001, df, lower.tail = FALSE)
+  print(critval)
+  print("TEST STAT:")
+  print(teststat)
+  print("P-VAL")
+  print(pchisq(teststat, df, lower.tail = FALSE))
+  print("------------------------------------------------------------------------------------------")
+  
+  print("6: Conduct the same test again but with the TTM-HAR-EPS model.")
+  maxmodel <- TTM.HAR_eps.fit(data = data, RM = RM, K = K, method=method)
+  constrmodel <- TTM.HAR_eps.fit(data = data, RM = RM, K = 0, method=method)
+  teststat <- as.numeric(2 * (constrmodel$value - maxmodel$value)) # mult. by 2, not -2 as the "value" is negative loglikelihood
+  df <- 2*K #only 1 
+  
+  print("95% CRIT. VAL.:")
+  critval <- qchisq(0.05, df, lower.tail = FALSE)
+  print(critval)
+  print("99% CRIT. VAL.:")
+  critval <- qchisq(0.01, df, lower.tail = FALSE)
+  print(critval)
+  print("99.9% CRIT. VAL.:")
+  critval <- qchisq(0.001, df, lower.tail = FALSE)
+  print(critval)
+  print("TEST STAT:")
+  print(teststat)
+  print("P-VAL")
+  print(pchisq(teststat, df, lower.tail = FALSE))
+  print("------------------------------------------------------------------------------------------")
+  
+  
+  print("7: Does the TTM-HAR-RM model provide significant improvement over the trig model? LR TEST:")
+  maxmodel <- TTM.HAR_RM.fit(data = data, RM = RM, K = K, onestep = TRUE)
+  constrmodel <- TTM.HAR_RM.fit(data = data, RM = RM, K = K, onestep = FALSE)$trigmodel
+  teststat <- as.numeric(-2 * (logLik(constrmodel) - (logLik(maxmodel))))
+  df <- 3
+  
+  print("95% CRIT. VAL.:")
+  critval <- qchisq(0.05, df, lower.tail = FALSE)
+  print(critval)
+  print("99% CRIT. VAL.:")
+  critval <- qchisq(0.01, df, lower.tail = FALSE)
+  print(critval)
+  print("99.9% CRIT. VAL.:")
+  critval <- qchisq(0.001, df, lower.tail = FALSE)
+  print(critval)
+  print("TEST STAT:")
+  print(teststat)
+  print("P-VAL")
+  print(pchisq(teststat, df, lower.tail = FALSE))
+  print("------------------------------------------------------------------------------------------")
+  
+  print('8: Additionally, does the TTM-HAR-EPS model provide significant improvement over the trig model?')
+  print("LR test: Max model vs. TTM model. Are HAR coefficients significantly non-zero?")
+  maxmodel <- TTM.HAR_eps.fit(data = data, RM = RM, K = K, method=method)
+  constrmodel <- TTM.HAR_RM.fit(data = data, RM = RM, K = K, onestep = FALSE)$trigmodel
+  teststat <- as.numeric(-2 * (logLik(constrmodel) - (-maxmodel$value)))
+  df <- 3
+  
+  print("95% CRIT. VAL.:")
+  critval <- qchisq(0.05, df, lower.tail = FALSE)
+  print(critval)
+  print("99% CRIT. VAL.:")
+  critval <- qchisq(0.01, df, lower.tail = FALSE)
+  print(critval)
+  print("99.9% CRIT. VAL.:")
+  critval <- qchisq(0.001, df, lower.tail = FALSE)
+  print(critval)
+  print("TEST STAT:")
+  print(teststat)
+  print("P-VAL")
+  print(pchisq(teststat, df, lower.tail = FALSE))
+  print("------------------------------------------------------------------------------------------")
+  
+  print("9: Is TTM-HAR-EPS MLE significantly better/worse than TTM-HAR-RM? How about original 2step TTM-HAR-EPS? Relative AIC Ratio:")
+  print(paste0(RM, " LR test: 2 step MLE vs 1 step model."))
+  model1 <- TTM.HAR_RM.fit(data = data, RM = RM, K = K)
+  AIC1 <- 2*(5 + 2*K) - 2*logLik(model1)[1]
+  model2 <- TTM.HAR_eps.fit(data = data, RM = RM, K = K, method=method)
+  AIC2 <- 2*(5 + 2*K) - 2*(-model2$value)
+  teststat <- exp(0.5 * -abs(AIC1 - AIC2))
+  print("1 step AIC:")
+  print(AIC1)
+  print("2 step AIC:")
+  print(AIC2)
+  print("Test Stat:")
+  print(teststat)
+    
+}
+
+
+```
+
+```{r label = 'using-hyp-tests}
+RM <- 'RS'
+K <- 0
+trainDateRange <- c(as.Date("2013-01-01"), as.Date("2021-04-30"))
+testDateRange <- c(as.Date("2021-05-01"), as.Date("2023-05-01"))
+
+TTM.HAR_eps.fit(FirstDecNearby, 'RV', 6, method='BFGS')
+
+hypTest8(FirstDecNearby, RM = RM, K=K) #testing significance of har in ttm-har-eps model
+hypTest4a(FirstDecNearby, RM = RM, K=K, method='SANN') #testing significance of ttm in ttm-har-eps model
+hypTest6(FirstDecNearby, RM = RM, K=K) #testing significance of just seasonal ttm in ttm-har-eps model
+
+hypTest7(FirstDecNearby, RM = RM, K=K) #testing significance of har in ttm-har-rm model
+hypTest3(FirstDecNearby, RM = RM, K=K) #testing significance of ttm in ttm-har-rm model
+hypTest5(FirstDecNearby, RM = RM, K=K) #testing significance of just seasonal ttm in ttm-har-rm model
+
+hypTest2(FirstDecNearby, RM = RM, K=K) #testing significance of har against intercept
+hypTest1(FirstDecNearby, RM = RM, K=K) #testing significance of ttm against intercept
+hypTest4b(FirstDecNearby, RM = RM, K=K) #testing significance of seasonalttm against intercept + linear
+
+hypTests(FirstDecNearby, 'RV', 6, method='L-BFGS-B')
+```
+
+```{r label = 'hyp-test-tables'}
+RM <- 'RV'
+K <- 6
+method='BFGS'
+options(digits=8)
+
+cbind(hypTest8(FirstDecNearby, RM = RM, K=K, method=method)[c(1,3)], hypTest4a(FirstDecNearby, RM = RM, K = K, method=method)[c(1,3)], hypTest6(FirstDecNearby, RM = RM, K=K, method=method)[c(1,3)]) %>% `colnames<-`(c('HAR Significance', 'TTM Significance', 'Seasonal TTM Significance'))
+```
+
+
+#*Moments Forecasting*
+
+```{r}
+RM <- 'RK'
+K <- 6
+window <- 1
+
+mod.data <- modData(data=FirstDecNearby, RM = RM, K=0, onestep=FALSE)
+  har_model <- HARmodel(xts(pull(mod.data,RM), order.by = mod.data$Date), type = 'HAR', inputType = 'RM')
+  har_fc <- MomForecast(har_model, data = FirstDecNearby, RM = RM, window = window, spec = 'HAR') %>% filter(between(Date, testDateRange[1], testDateRange[2])) %>% mutate(resid = get(RM) - get(paste0('forecast_', window)))
+  har_fc %>% ggplot() + geom_line(aes(x = Date, y = get(RM))) + geom_line(aes(x = Date, y = get(paste0('forecast_',window))), col = 'red') 
+  har_eval <- har_fc %>% summarise(RMSE = sqrt(mean((get(RM) - get(paste0('forecast_',window)))^2)), MAE = mean(abs(get(RM) - get(paste0('forecast_',window)))), QLIKE = mean(log(get(RM))+ (get(paste0('forecast_',window)))/get(RM)))
+  
+  ttm_model <- TTM.HAR_RM.fit(data=FirstDecNearby, RM=RM, K=K, onestep=FALSE)$trigmodel
+  trig_fc <- MomForecast(ttm_model, data = FirstDecNearby, RM=RM, window = window, spec = 'TTM') %>% filter(between(Date, testDateRange[1], testDateRange[2])) %>% mutate(resid = get(RM) - get(paste0('forecast_', 1)))
+  trig_fc %>% ggplot() + geom_line(aes(x = Date, y = get(RM))) + geom_line(aes(x = Date, y = forecast_1), col = 'red')
+  trig_eval <- trig_fc %>% summarise(RMSE = sqrt(mean((get(RM) - forecast_1)^2)), MAE = mean(abs(get(RM) - forecast_1)), QLIKE = mean(log(get(RM))+ (forecast_1)/get(RM)))
+  
+  model_1 <- TTM.HAR_RM.fit(data = FirstDecNearby, RM = RM, K = K, onestep = TRUE)
+  ttm_har_rm_fc <- MomForecast(model_1, data = FirstDecNearby, RM=RM, window = window, spec = 'TTM-HAR-RM') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  ttm_har_rm_fc %>% ggplot() + geom_line(aes(x = Date, y = get(RM))) + geom_line(aes(x = Date, y = get(paste0('forecast_',window))), col = 'red')
+  ttm_har_rm_eval <- ttm_har_rm_fc %>% summarise(RMSE = sqrt(mean((get(RM) - get(paste0('forecast_',window)))^2)), MAE = mean(abs(get(RM) - get(paste0('forecast_',window)))), QLIKE = mean(log(get(RM))+ (get(paste0('forecast_',window)))/get(RM)))
+  
+  ttm_har_eps_model <- TTM.HAR_eps.fit(data = FirstDecNearby, RM = RM, K = K, method='BFGS')
+  ttm_har_eps_fc <- MomForecast(ttm_har_eps_model, data = FirstDecNearby, window = window, RM=RM, spec = 'TTM-HAR.eps') %>% filter(between(Date, testDateRange[1], testDateRange[2])) %>% mutate(resid = get(RM) - get(paste0('forecast_', window)))
+  ttm_har_eps_fc %>% ggplot() + geom_line(aes(x = Date, y = get(RM))) + geom_line(aes(x = Date, y = get(paste0('forecast_',window))), col='red')
+  ttm_har_eps_eval <- ttm_har_eps_fc %>% summarise(RMSE = sqrt(mean((get(RM) - get(paste0('forecast_',window)))^2)), MAE = mean(abs(get(RM) - get(paste0('forecast_',window)))), QLIKE = mean(log(get(RM)) + (get(paste0('forecast_',window)))/get(RM)))
+  
+  rbind('HAR' = har_eval, 'TTM' = trig_eval, 'TTM-HAR-RM' = ttm_har_rm_eval, 'TTM-HAR-EPS' = ttm_har_eps_eval)
+  # dm.test(ttm_har_eps_fc$forecast_10 - ttm_har_eps_fc$RV, har_fc$forecast_10 - har_fc$RV, h=window, alternative='greater')
+  
+  
+```
+
+```{r}
+dm_matrix <- matrix(data=NA, nrow=4, ncol=4)
+options(digits=4)
+RM <- 'RV'
+K <- 6
+window <- 10
+
+mod.data <- modData(FirstDecNearby, RM = RM, K=0)
+har_model <- HARmodel(xts(pull(mod.data, RM), order.by = mod.data$Date), type = 'HAR', inputType = 'RM')
+har_resids <- MomForecast(model=har_model, data=FirstDecNearby, window=window, RM=RM, spec='HAR') %>% filter(between(Date, testDateRange[1], testDateRange[2])) %>% mutate(resid = get(RM) - get(paste0('forecast_',window))) %>% select(resid)
+ttm_model <- TTM.HAR_RM.fit(FirstDecNearby, RM=RM, K=K, onestep=FALSE)$trigmodel
+ttm_resids <- MomForecast(model=ttm_model, data=FirstDecNearby, window=1, RM=RM, spec='TTM') %>% filter(between(Date, testDateRange[1], testDateRange[2])) %>% mutate(resid = get(RM) - forecast_1) %>% select(resid)
+har.rm_model <- TTM.HAR_RM.fit(FirstDecNearby, RM=RM, K=K)
+har.rm_resids <- MomForecast(model=har.rm_model, data=FirstDecNearby, window=window, RM=RM, spec='TTM-HAR-RM') %>% filter(between(Date, testDateRange[1], testDateRange[2])) %>% mutate(resid = get(RM) - get(paste0('forecast_', window))) %>% select(resid)
+har.eps_model <- TTM.HAR_eps.fit(data=FirstDecNearby, RM=RM, K=K, method='BFGS')
+har.eps_resids <- MomForecast(model=har.eps_model, data=FirstDecNearby, window=window, RM=RM, spec='TTM-HAR.eps') %>% filter(between(Date, testDateRange[1], testDateRange[2])) %>% mutate(resid = get(RM) - get(paste0('forecast_',window))) %>% select(resid)
+
+dm_matrix[,1] <- unlist(lapply(X = c('har_resids', 'ttm_resids', 'har.rm_resids', 'har.eps_resids'), FUN = function(x){if (x == 'har_resids'){NA} else {dm.test(har_resids$resid, get(x)$resid, h=window, alternative='greater')$p.value}}))
+
+dm_matrix[,2] <- unlist(lapply(X = c('har_resids', 'ttm_resids', 'har.rm_resids', 'har.eps_resids'), FUN = function(x){if (x == 'ttm_resids'){NA} else {dm.test(ttm_resids$resid, get(x)$resid, h=window, alternative='greater')$p.value}}))
+
+dm_matrix[,3] <- unlist(lapply(X = c('har_resids', 'ttm_resids', 'har.rm_resids', 'har.eps_resids'), FUN = function(x){if (x == 'har.rm_resids'){NA} else {dm.test(har.rm_resids$resid, get(x)$resid, h=window, alternative='greater')$p.value}}))
+
+dm_matrix[,4] <- unlist(lapply(X = c('har_resids', 'ttm_resids', 'har.rm_resids', 'har.eps_resids'), FUN = function(x){if (x == 'har.eps_resids'){NA} else {dm.test(har.eps_resids$resid, get(x)$resid, h=window, alternative='greater')$p.value}}))
+
+colnames(dm_matrix) <- c('HAR', 'TTM', 'HAR-RM', 'HAR-EPS')
+rownames(dm_matrix) <- c('HAR', 'TTM', 'HAR-RM', 'HAR-EPS')
+dm_matrix %>% knitr::kable(caption = paste0(window, ' Days Ahead ', RM, ' Forecast DM-Tests'))
+```
+
+
+```{r label = 'plot-exporting'}
+trainDateRange <- c(as.Date("2020-01-01"), as.Date("2023-04-30"))
+testDateRange <- c(as.Date("2017-05-01"), as.Date("2019-12-31"))
+# trainDateRange <- c(as.Date("2013-01-01"), as.Date("2021-04-30"))
+# testDateRange <- c(as.Date("2021-05-01"), as.Date("2023-05-01"))
+RM <- 'RV'
+K = 6
+mod.data <- modData(data=FirstDecNearby, RM = RM, K=0, onestep=FALSE)
+  har_model <- HARmodel(xts(pull(mod.data,RM), order.by = mod.data$Date), type = 'HAR', inputType = 'RM')
+  har_fc <- MomForecast(har_model, data = FirstDecNearby, RM = RM, window = 252, spec = 'HAR') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_model <- TTM.HAR_RM.fit(data=FirstDecNearby, RM=RM, K=K, onestep=FALSE)$trigmodel
+  trig_fc <- MomForecast(ttm_model, data = FirstDecNearby, RM=RM, window = 1, spec = 'TTM') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_har_eps_model <- TTM.HAR_eps.fit(data = FirstDecNearby, RM = RM, K = K, method='BFGS')
+  ttm_har_eps_fc <- MomForecast(ttm_har_eps_model, data = FirstDecNearby, window = 252, RM=RM, spec = 'TTM-HAR.eps') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+
+  cbind('Date' = ttm_har_eps_fc$Date, 'DaystoMaturity' = ttm_har_eps_fc$DaystoMaturity, 'True RV' = ttm_har_eps_fc$RV, 'HAR' = har_fc$forecast_1, 'TTM' = trig_fc$forecast_1, 'TTM-HAR-e' = ttm_har_eps_fc$forecast_1) %>%
+  data.frame() %>%
+    gather("id", "value", 3:6) %>%
+  mutate(Date = as.Date.numeric(Date)) %>%
+    rename("Model" = id) %>%
+    mutate(Model = as.factor(Model)) %>%
+    ggplot() + geom_line(mapping=aes(Date, value, colour = Model), alpha=0.7) + ggtitle('RV 1-Day Ahead Out of Sample Forecasts')
+  
+RM <- 'RS'
+K = 0
+mod.data <- modData(data=FirstDecNearby, RM = RM, K=0, onestep=FALSE)
+  har_model <- HARmodel(xts(pull(mod.data,RM), order.by = mod.data$Date), type = 'HAR', inputType = 'RM')
+  har_fc <- MomForecast(har_model, data = FirstDecNearby, RM = RM, window = 252, spec = 'HAR') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_model <- TTM.HAR_RM.fit(data=FirstDecNearby, RM=RM, K=K, onestep=FALSE)$trigmodel
+  trig_fc <- MomForecast(ttm_model, data = FirstDecNearby, RM=RM, window = 1, spec = 'TTM') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_har_eps_model<- TTM.HAR_eps.fit(data = FirstDecNearby, RM = RM, K = K, method='BFGS')
+  ttm_har_eps_fc <- MomForecast(ttm_har_eps_model, data = FirstDecNearby, window = 252, RM=RM, spec = 'TTM-HAR.eps') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+
+  
+  cbind('Date' = ttm_har_eps_fc$Date, 'DaystoMaturity' = ttm_har_eps_fc$DaystoMaturity, 'True RS' = pull(ttm_har_eps_fc, RM), 'HAR' = har_fc$forecast_1, 'TTM' = trig_fc$forecast_1, 'TTM-HAR-e' = ttm_har_eps_fc$forecast_1) %>%
+  data.frame() %>%
+    gather("id", "value", 3:6) %>%
+  mutate(Date = as.Date.numeric(Date)) %>%
+    rename("Model" = id) %>%
+    mutate(Model = as.factor(Model)) %>%
+    ggplot() + geom_line(mapping=aes(Date, value, colour = Model), alpha=0.7) + ggtitle('RS 1-Day Ahead Out of Sample Forecasts')
+  
+RM <- 'RK'
+K = 1
+mod.data <- modData(data=FirstDecNearby, RM = RM, K=0, onestep=FALSE)
+  har_model <- HARmodel(xts(pull(mod.data,RM), order.by = mod.data$Date), type = 'HAR', inputType = 'RM')
+  har_fc <- MomForecast(har_model, data = FirstDecNearby, RM = RM, window = 252, spec = 'HAR') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_model <- TTM.HAR_RM.fit(data=FirstDecNearby, RM=RM, K=K, onestep=FALSE)$trigmodel
+  trig_fc <- MomForecast(ttm_model, data = FirstDecNearby, RM=RM, window = 1, spec = 'TTM') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_har_eps_model<- TTM.HAR_eps.fit(data = FirstDecNearby, RM = RM, K = K, method='BFGS')
+  ttm_har_eps_fc <- MomForecast(ttm_har_eps_model, data = FirstDecNearby, window = 252, RM=RM, spec = 'TTM-HAR.eps') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+
+  cbind('Date' = ttm_har_eps_fc$Date, 'DaystoMaturity' = ttm_har_eps_fc$DaystoMaturity, 'True RK' = ttm_har_eps_fc$RK, 'HAR' = har_fc$forecast_1, 'TTM' = trig_fc$forecast_1, 'TTM-HAR-e' = ttm_har_eps_fc$forecast_1) %>%
+  data.frame() %>%
+    gather("id", "value", 3:6) %>%
+  mutate(Date = as.Date.numeric(Date)) %>%
+    rename("Model" = id) %>%
+    mutate(Model = as.factor(Model)) %>%
+    ggplot() + geom_line(mapping=aes(Date, value, colour = Model), alpha=0.7) + ggtitle('RK 1-Day Ahead Out of Sample Forecasts')
+
+#-------------------------------------------------------------------------------------------------------------------------#
+
+RM <- 'RV'
+K = 6
+mod.data <- modData(data=FirstDecNearby, RM = RM, K=0, onestep=FALSE)
+  har_model <- HARmodel(xts(pull(mod.data,RM), order.by = mod.data$Date), type = 'HAR', inputType = 'RM')
+  har_fc <- MomForecast(har_model, data = FirstDecNearby, RM = RM, window = 252, spec = 'HAR') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_model <- TTM.HAR_RM.fit(data=FirstDecNearby, RM=RM, K=K, onestep=FALSE)$trigmodel
+  trig_fc <- MomForecast(ttm_model, data = FirstDecNearby, RM=RM, window = 1, spec = 'TTM') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_har_eps_model<- TTM.HAR_eps.fit(data = FirstDecNearby, RM = RM, K = K, method='BFGS')
+  ttm_har_eps_fc <- MomForecast(ttm_har_eps_model, data = FirstDecNearby, window = 252, RM=RM, spec = 'TTM-HAR.eps') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+
+  cbind('Date' = ttm_har_eps_fc$Date, 'DaystoMaturity' = ttm_har_eps_fc$DaystoMaturity, 'True RV' = ttm_har_eps_fc$RV, 'HAR' = har_fc$forecast_10, 'TTM' = trig_fc$forecast_1, 'TTM-HAR-e' = ttm_har_eps_fc$forecast_10) %>%
+  data.frame() %>%
+    gather("id", "value", 3:6) %>%
+  mutate(Date = as.Date.numeric(Date)) %>%
+    rename("Model" = id) %>%
+    mutate(Model = as.factor(Model)) %>%
+    ggplot() + geom_line(mapping=aes(Date, value, colour = Model), alpha=0.7) + ggtitle('RV 10-Day Ahead Out of Sample Forecasts')
+  
+RM <- 'RS'
+K = 0
+mod.data <- modData(data=FirstDecNearby, RM = RM, K=0, onestep=FALSE)
+  har_model <- HARmodel(xts(pull(mod.data,RM), order.by = mod.data$Date), type = 'HAR', inputType = 'RM')
+  har_fc <- MomForecast(har_model, data = FirstDecNearby, RM = RM, window = 252, spec = 'HAR') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_model <- TTM.HAR_RM.fit(data=FirstDecNearby, RM=RM, K=K, onestep=FALSE)$trigmodel
+  trig_fc <- MomForecast(ttm_model, data = FirstDecNearby, RM=RM, window = 1, spec = 'TTM') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_har_eps_model<- TTM.HAR_eps.fit(data = FirstDecNearby, RM = RM, K = K, method='BFGS')
+  ttm_har_eps_fc <- MomForecast(ttm_har_eps_model, data = FirstDecNearby, window = 252, RM=RM, spec = 'TTM-HAR.eps') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+
+  
+  cbind('Date' = ttm_har_eps_fc$Date, 'DaystoMaturity' = ttm_har_eps_fc$DaystoMaturity, 'True RS' = pull(ttm_har_eps_fc, RM), 'HAR' = har_fc$forecast_10, 'TTM' = trig_fc$forecast_1, 'TTM-HAR-e' = ttm_har_eps_fc$forecast_10) %>%
+  data.frame() %>%
+    gather("id", "value", 3:6) %>%
+  mutate(Date = as.Date.numeric(Date)) %>%
+    rename("Model" = id) %>%
+    mutate(Model = as.factor(Model)) %>%
+    ggplot() + geom_line(mapping=aes(Date, value, colour = Model), alpha=0.7) + ggtitle('RS 10-Day Ahead Out of Sample Forecasts')
+  
+RM <- 'RK'
+K = 1
+mod.data <- modData(data=FirstDecNearby, RM = RM, K=0, onestep=FALSE)
+  har_model <- HARmodel(xts(pull(mod.data,RM), order.by = mod.data$Date), type = 'HAR', inputType = 'RM')
+  har_fc <- MomForecast(har_model, data = FirstDecNearby, RM = RM, window = 252, spec = 'HAR') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_model <- TTM.HAR_RM.fit(data=FirstDecNearby, RM=RM, K=K, onestep=FALSE)$trigmodel
+  trig_fc <- MomForecast(ttm_model, data = FirstDecNearby, RM=RM, window = 1, spec = 'TTM') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_har_eps_model<- TTM.HAR_eps.fit(data = FirstDecNearby, RM = RM, K = K, method='BFGS')
+  ttm_har_eps_fc <- MomForecast(ttm_har_eps_model, data = FirstDecNearby, window = 252, RM=RM, spec = 'TTM-HAR.eps') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+
+  cbind('Date' = ttm_har_eps_fc$Date, 'DaystoMaturity' = ttm_har_eps_fc$DaystoMaturity, 'True RK' = ttm_har_eps_fc$RK, 'HAR' = har_fc$forecast_10, 'TTM' = trig_fc$forecast_1, 'TTM-HAR-e' = ttm_har_eps_fc$forecast_10) %>%
+  data.frame() %>%
+    gather("id", "value", 3:6) %>%
+  mutate(Date = as.Date.numeric(Date)) %>%
+    rename("Model" = id) %>%
+    mutate(Model = as.factor(Model)) %>%
+    ggplot() + geom_line(mapping=aes(Date, value, colour = Model), alpha=0.7) + ggtitle('RK 10-Day Ahead Out of Sample Forecasts')
+
+
+#-------------------------------------------------------------------------------------------------------------------------#
+
+RM <- 'RV'
+K = 6
+mod.data <- modData(data=FirstDecNearby, RM = RM, K=0, onestep=FALSE)
+  har_model <- HARmodel(xts(pull(mod.data,RM), order.by = mod.data$Date), type = 'HAR', inputType = 'RM')
+  har_fc <- MomForecast(har_model, data = FirstDecNearby, RM = RM, window = 252, spec = 'HAR') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_model <- TTM.HAR_RM.fit(data=FirstDecNearby, RM=RM, K=K, onestep=FALSE)$trigmodel
+  trig_fc <- MomForecast(ttm_model, data = FirstDecNearby, RM=RM, window = 1, spec = 'TTM') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_har_eps_model<- TTM.HAR_eps.fit(data = FirstDecNearby, RM = RM, K = K, method='BFGS')
+  ttm_har_eps_fc <- MomForecast(ttm_har_eps_model, data = FirstDecNearby, window = 252, RM=RM, spec = 'TTM-HAR.eps') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+
+  cbind('Date' = ttm_har_eps_fc$Date, 'DaystoMaturity' = ttm_har_eps_fc$DaystoMaturity, 'True RV' = ttm_har_eps_fc$RV, 'HAR' = har_fc$forecast_22, 'TTM' = trig_fc$forecast_1, 'TTM_HAR-e' = ttm_har_eps_fc$forecast_22) %>%
+  data.frame() %>%
+    gather("id", "value", 3:6) %>%
+  mutate(Date = as.Date.numeric(Date)) %>%
+    rename("Model" = id) %>%
+    mutate(Model = as.factor(Model)) %>%
+    ggplot() + geom_line(mapping=aes(Date, value, colour = Model), alpha=0.7) + ggtitle('RV 22-Day Ahead Out of Sample Forecasts')
+  
+RM <- 'RS'
+K = 0
+mod.data <- modData(data=FirstDecNearby, RM = RM, K=0, onestep=FALSE)
+  har_model <- HARmodel(xts(pull(mod.data,RM), order.by = mod.data$Date), type = 'HAR', inputType = 'RM')
+  har_fc <- MomForecast(har_model, data = FirstDecNearby, RM = RM, window = 252, spec = 'HAR') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_model <- TTM.HAR_RM.fit(data=FirstDecNearby, RM=RM, K=K, onestep=FALSE)$trigmodel
+  trig_fc <- MomForecast(ttm_model, data = FirstDecNearby, RM=RM, window = 1, spec = 'TTM') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_har_eps_model<- TTM.HAR_eps.fit(data = FirstDecNearby, RM = RM, K = K, method='BFGS')
+  ttm_har_eps_fc <- MomForecast(ttm_har_eps_model, data = FirstDecNearby, window = 252, RM=RM, spec = 'TTM-HAR.eps') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+
+  
+  cbind('Date' = ttm_har_eps_fc$Date, 'DaystoMaturity' = ttm_har_eps_fc$DaystoMaturity, 'True RS' = pull(ttm_har_eps_fc, RM), 'HAR' = har_fc$forecast_22, 'TTM' = trig_fc$forecast_1, 'TTM_HAR-e' = ttm_har_eps_fc$forecast_22) %>%
+  data.frame() %>%
+    gather("id", "value", 3:6) %>%
+  mutate(Date = as.Date.numeric(Date)) %>%
+    rename("Model" = id) %>%
+    mutate(Model = as.factor(Model)) %>%
+    ggplot() + geom_line(mapping=aes(Date, value, colour = Model), alpha=0.7) + ggtitle('RS 22-Day Ahead Out of Sample Forecasts')
+  
+RM <- 'RK'
+K = 1
+mod.data <- modData(data=FirstDecNearby, RM = RM, K=0, onestep=FALSE)
+  har_model <- HARmodel(xts(pull(mod.data,RM), order.by = mod.data$Date), type = 'HAR', inputType = 'RM')
+  har_fc <- MomForecast(har_model, data = FirstDecNearby, RM = RM, window = 252, spec = 'HAR') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_model <- TTM.HAR_RM.fit(data=FirstDecNearby, RM=RM, K=K, onestep=FALSE)$trigmodel
+  trig_fc <- MomForecast(ttm_model, data = FirstDecNearby, RM=RM, window = 1, spec = 'TTM') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_har_eps_model<- TTM.HAR_eps.fit(data = FirstDecNearby, RM = RM, K = K, method='BFGS')
+  ttm_har_eps_fc <- MomForecast(ttm_har_eps_model, data = FirstDecNearby, window = 252, RM=RM, spec = 'TTM-HAR.eps') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+
+  cbind('Date' = ttm_har_eps_fc$Date, 'DaystoMaturity' = ttm_har_eps_fc$DaystoMaturity, 'True RK' = ttm_har_eps_fc$RK, 'HAR' = har_fc$forecast_22, 'TTM' = trig_fc$forecast_1, 'TTM_HAR-e' = ttm_har_eps_fc$forecast_22) %>%
+    data.frame() %>%
+    gather("id", "value", 3:6) %>%
+  mutate(Date = as.Date.numeric(Date)) %>%
+    rename("Model" = id) %>%
+    mutate(Model = as.factor(Model)) %>%
+    ggplot() + geom_line(mapping=aes(Date, value, colour = Model), alpha=0.7) + ggtitle('RK 22-Day Ahead Out of Sample Forecasts')
+  
+  
+  
+  #-------------------------------------------------------------------------------------------------------------------------#
+  
+RM <- 'RV'
+K = 6
+mod.data <- modData(data=FirstDecNearby, RM = RM, K=0, onestep=FALSE)
+  har_model <- HARmodel(xts(pull(mod.data,RM), order.by = mod.data$Date), type = 'HAR', inputType = 'RM')
+  har_fc <- MomForecast(har_model, data = FirstDecNearby, RM = RM, window = 252, spec = 'HAR') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_model <- TTM.HAR_RM.fit(data=FirstDecNearby, RM=RM, K=K, onestep=FALSE)$trigmodel
+  trig_fc <- MomForecast(ttm_model, data = FirstDecNearby, RM=RM, window = 1, spec = 'TTM') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_har_eps_model<- TTM.HAR_eps.fit(data = FirstDecNearby, RM = RM, K = K, method='BFGS')
+  ttm_har_eps_fc <- MomForecast(ttm_har_eps_model, data = FirstDecNearby, window = 252, RM=RM, spec = 'TTM-HAR.eps') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+
+  cbind('Date' = ttm_har_eps_fc$Date, 'DaystoMaturity' = ttm_har_eps_fc$DaystoMaturity, 'True RV' = ttm_har_eps_fc$RV, 'HAR' = har_fc$forecast_66, 'TTM' = trig_fc$forecast_1, 'TTM_HAR-e' = ttm_har_eps_fc$forecast_66) %>%
+  data.frame() %>%
+    gather("id", "value", 3:6) %>%
+  mutate(Date = as.Date.numeric(Date)) %>%
+    rename("Model" = id) %>%
+    mutate(Model = as.factor(Model)) %>%
+    ggplot() + geom_line(mapping=aes(Date, value, colour = Model), alpha=0.7) + ggtitle('RV 66-Day Ahead Out of Sample Forecasts')
+  
+RM <- 'RS'
+K = 0
+mod.data <- modData(data=FirstDecNearby, RM = RM, K=0, onestep=FALSE)
+  har_model <- HARmodel(xts(pull(mod.data,RM), order.by = mod.data$Date), type = 'HAR', inputType = 'RM')
+  har_fc <- MomForecast(har_model, data = FirstDecNearby, RM = RM, window = 252, spec = 'HAR') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_model <- TTM.HAR_RM.fit(data=FirstDecNearby, RM=RM, K=K, onestep=FALSE)$trigmodel
+  trig_fc <- MomForecast(ttm_model, data = FirstDecNearby, RM=RM, window = 1, spec = 'TTM') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_har_eps_model<- TTM.HAR_eps.fit(data = FirstDecNearby, RM = RM, K = K, method='BFGS')
+  ttm_har_eps_fc <- MomForecast(ttm_har_eps_model, data = FirstDecNearby, window = 252, RM=RM, spec = 'TTM-HAR.eps') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+
+  
+  cbind('Date' = ttm_har_eps_fc$Date, 'DaystoMaturity' = ttm_har_eps_fc$DaystoMaturity, 'True RS' = pull(ttm_har_eps_fc, RM), 'HAR' = har_fc$forecast_66, 'TTM' = trig_fc$forecast_1, 'TTM_HAR-e' = ttm_har_eps_fc$forecast_66) %>%
+  data.frame() %>%
+    gather("id", "value", 3:6) %>%
+  mutate(Date = as.Date.numeric(Date)) %>%
+    rename("Model" = id) %>%
+    mutate(Model = as.factor(Model)) %>%
+    ggplot() + geom_line(mapping=aes(Date, value, colour = Model), alpha=0.7) + ggtitle('RS 66-Day Ahead Out of Sample Forecasts')
+  
+RM <- 'RK'
+K = 1
+mod.data <- modData(data=FirstDecNearby, RM = RM, K=0, onestep=FALSE)
+  har_model <- HARmodel(xts(pull(mod.data,RM), order.by = mod.data$Date), type = 'HAR', inputType = 'RM')
+  har_fc <- MomForecast(har_model, data = FirstDecNearby, RM = RM, window = 252, spec = 'HAR') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_model <- TTM.HAR_RM.fit(data=FirstDecNearby, RM=RM, K=K, onestep=FALSE)$trigmodel
+  trig_fc <- MomForecast(ttm_model, data = FirstDecNearby, RM=RM, window = 1, spec = 'TTM') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+  
+  ttm_har_eps_model<- TTM.HAR_eps.fit(data = FirstDecNearby, RM = RM, K = K, method='BFGS')
+  ttm_har_eps_fc <- MomForecast(ttm_har_eps_model, data = FirstDecNearby, window = 252, RM=RM, spec = 'TTM-HAR.eps') %>% filter(between(Date, testDateRange[1], testDateRange[2]))
+
+  cbind('Date' = ttm_har_eps_fc$Date, 'DaystoMaturity' = ttm_har_eps_fc$DaystoMaturity, 'True RK' = ttm_har_eps_fc$RK, 'HAR' = har_fc$forecast_66, 'TTM' = trig_fc$forecast_1, 'TTM_HAR-e' = ttm_har_eps_fc$forecast_66) %>%
+    data.frame() %>%
+    gather("id", "value", 3:6) %>%
+  mutate(Date = as.Date.numeric(Date)) %>%
+    rename("Model" = id) %>%
+    mutate(Model = as.factor(Model)) %>%
+    ggplot() + geom_line(mapping=aes(Date, value, colour = Model), alpha=0.7) + ggtitle('RK 66-Day Ahead Out of Sample Forecasts')
+```
+
+
+
